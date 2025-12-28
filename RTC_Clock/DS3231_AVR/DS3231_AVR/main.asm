@@ -1,0 +1,666 @@
+;
+; DS3231_AVR.asm
+;
+; Created: 5/20/2025 9:38:50 PM
+; Author : KHANH
+;Write thi bit 0
+;Read thi bit 1
+.EQU LCD_DDR = DDRD 
+.EQU LCD_PORT = PORTD
+.EQU LCD_IN   = PIND
+.EQU RS = 3
+.EQU RW = 2
+.EQU EN = 4
+
+//--------------Dat gia tri thoi gian ban dau (BCD)----------------------
+.EQU HOURS = 0b00_10_0000  ;bit7=0, bit6=12-or-/24, bit5=/AM-or-PM-or-20hour, bit4=10hour, bit3->bit0=hours
+.EQU MINUTES = 0x00
+.EQU SECOND = 0x00
+
+//-------------Dat ngay thang nam ban dau (BCD)--------------------------
+.EQU DATE = 0x22
+.EQU YEAR = 0x24
+.EQU MONTH = 0x05
+
+.ORG 0x00
+RJMP MAIN_LCD
+
+.ORG 0x0016
+RJMP TIMER1_COMPA_ISR
+
+//PCINT8 thuoc PCINT1 (PC0)
+.ORG 0x0008
+RJMP PCINT1_ISR
+
+.ORG 0X40
+MAIN_LCD:
+	LDI R23,0x00
+	
+	SBI DDRC,3		;Buzzer off
+	CBI PORTC,3
+
+	SBI DDRC,1		;LED PCINT Test
+	
+	CBI DDRC,0		;PCINT button
+	SBI PORTC,0
+
+	SBI DDRC,2		;Timer LED Test
+				
+	RCALL LCD_INIT
+	RCALL I2C_INIT
+	RCALL SET_TIME
+	RCALL SET_DATE
+	RCALL DELAY_1S_CTC_INIT
+	LDI R16,(1<<OCIE1A)
+	STS TIMSK1,R16
+
+	LDI R16,(1<<PCIE1)
+	STS PCICR,R16
+	LDI R16,(1<<PCINT8)
+	STS PCMSK1,R16
+
+	SEI
+	
+HERE:
+	RJMP HERE
+
+
+//-----------------------ChuongTrinhCon-------------------------------
+
+//-----------##@-ChuongTrinhCon_LCD-@##-----------------------
+PRINT_LINE1:
+	LDI		R17, 0x80
+	RCALL	WRITECOM
+	LDI     ZH, HIGH(LINE1<<1) 
+	LDI     ZL, LOW (LINE1<<1)
+PRINT_LINE1_LOOP:
+	LPM		R17, Z+
+	CPI		R17, 0
+	BREQ	EXIT_PRINT_LINE1	
+	RCALL	WRITECHAR
+	RJMP PRINT_LINE1_LOOP
+EXIT_PRINT_LINE1:
+	RCALL I2C_START
+	LDI R22,0xD0		;Chon Slave (0x68 + bit WRITE) 
+	RCALL I2C_WRITE
+	LDI R22,0x00		;Pointer toi 0x00
+	RCALL I2C_WRITE
+	RCALL I2C_STOP
+
+	RCALL I2C_START
+	LDI R22,0xD1		;Bat dau doc (0x68 + bit READ)
+	RCALL I2C_WRITE
+
+	
+
+	RCALL I2C_READ		//Read Second
+	MOV R24,R22
+	
+	RCALL I2C_READ		//Read Minutes
+	MOV R25,R22
+	 
+	RCALL I2C_READ
+	MOV R26,R22			//Read Hours
+	RCALL I2C_NACK
+	RCALL I2C_STOP
+	RCALL DELAY_2MS
+
+//----------------Hien_Thi_Thoi_Gian--------------------
+	//Hien Thi Gio
+	MOV R22,R26
+	RCALL BCD_TO_ASCII
+	MOV R17,R19
+	RCALL WRITECHAR
+	MOV R17,R18
+	RCALL WRITECHAR
+
+	//----------------------
+	LDI R17,':'
+	RCALL WRITECHAR
+	//----------------------
+
+	//Hien Thi Phut
+	MOV R22,R25
+	RCALL BCD_TO_ASCII
+	MOV R17,R19
+	RCALL WRITECHAR
+	MOV R17,R18
+	RCALL WRITECHAR
+
+	//-----------------------
+	LDI R17,':'
+	RCALL WRITECHAR
+	//-----------------------
+
+	//Hien Thi Giay
+	MOV R22,R24
+	RCALL BCD_TO_ASCII
+	MOV R17,R19
+	RCALL WRITECHAR
+	MOV R17,R18
+	RCALL WRITECHAR
+/*
+	//-----------------------
+	LDI R17,' '
+	RCALL WRITECHAR
+	//-----------------------
+	
+	ANDI R26,0x20
+	CPI R26,0x00
+	BREQ AM
+	LDI R17,'P'
+	RCALL WRITECHAR
+	LDI R17,'M'
+	RCALL WRITECHAR
+	RJMP EXIT
+AM:
+	LDI R17,'A'
+	RCALL WRITECHAR
+	LDI R17,'M'
+	RCALL WRITECHAR
+	RJMP EXIT
+	*/
+EXIT:	RET	
+
+PRINT_LINE2:
+	LDI		R17, 0xC0
+	RCALL	WRITECOM
+	LDI     ZH, HIGH(LINE2<<1) 
+	LDI     ZL, LOW (LINE2<<1)
+PRINT_LINE2_LOOP:
+	LPM		R17, Z+
+	CPI		R17, 0
+	BREQ	EXIT_PRINT_LINE2	
+	RCALL	WRITECHAR
+	RJMP PRINT_LINE2_LOOP
+EXIT_PRINT_LINE2:
+	RCALL I2C_START
+	LDI R22,0xD0			;Chon Slave (0x68 + bit WRITE)
+	RCALL I2C_WRITE
+	LDI R22,0x04			;Pointer toi 0x04
+	RCALL I2C_WRITE
+	RCALL I2C_STOP
+
+	RCALL I2C_START
+	LDI R22,0xD1			;Bat dau doc (0x68 + bit READ)
+	RCALL I2C_WRITE
+
+	RCALL I2C_READ		//Read Day
+	MOV R27,R22
+
+	RCALL I2C_READ		//Read Month
+	MOV R28,R22
+	 
+	RCALL I2C_READ		//Read Year
+	MOV R29,R22
+
+	RCALL I2C_NACK
+	RCALL I2C_STOP
+	RCALL DELAY_2MS
+
+	//----------------Hien_Thi_Ngay_Thang_Nam--------------------
+	//Hien Thi Ngay
+	MOV R22,R27
+	RCALL BCD_TO_ASCII
+	MOV R17,R19
+	RCALL WRITECHAR
+	MOV R17,R18
+	RCALL WRITECHAR
+
+	//----------------------
+	LDI R17,'/'
+	RCALL WRITECHAR
+	//----------------------
+
+	//Hien Thi Thang
+	MOV R22,R28
+	RCALL BCD_TO_ASCII
+	MOV R17,R19
+	RCALL WRITECHAR
+	MOV R17,R18
+	RCALL WRITECHAR
+
+	//-----------------------
+	LDI R17,'/'
+	RCALL WRITECHAR
+	//-----------------------
+
+	//Hien Thi Nam
+	LDI R17,'2'
+	RCALL WRITECHAR
+	LDI R17,'0'
+	RCALL WRITECHAR
+
+	MOV R22,R29
+	RCALL BCD_TO_ASCII
+	MOV R17,R19
+	RCALL WRITECHAR
+	MOV R17,R18
+	RCALL WRITECHAR
+	RET	
+
+LCD_INIT:
+	LDI R16,0xFF
+	OUT DDRB,R16
+	LDI R16, 0xFF
+	OUT LCD_DDR, R16
+
+	RCALL DELAY_2MS
+	RCALL DELAY_2MS
+	LDI R17, 0x02
+	RCALL WRITECOM
+	LDI R17, 0x28
+	RCALL WRITECOM
+	LDI R17, 0x01
+	RCALL WRITECOM
+	LDI R17, 0x0C
+	RCALL WRITECOM
+	LDI R17, 0x06
+	RCALL WRITECOM
+    LDI R17, 0x80
+	RCALL WRITECOM
+	RET
+
+WRITECOM:
+	;;Gui byte lenh ra cac chan data (D0->D7)
+	MOV R16, R17
+	ANDI R16, 0xF0		;lay 4 bit cao
+	OUT LCD_PORT, R16
+	CBI PORTB, RS	;Chon che do ghi LENH
+	CBI PORTB, RW	;Chon che do GHI
+	SBI PORTB, EN
+	NOP
+	CBI PORTB, EN	;Cho Phep
+	RCALL DELAY_2MS
+	MOV R16, R17
+	SWAP R16
+	ANDI R16, 0xF0		;lay 4 bit thap
+	OUT LCD_PORT, R16
+	CBI PORTB, RS
+	CBI PORTB, RW
+	SBI PORTB, EN
+	NOP
+	CBI PORTB, EN
+	RCALL DELAY_2MS
+	RET
+
+WRITECHAR:
+	;;Gui ma ASCII ra cac chan data (D0->D7)
+	MOV R16, R17
+	ANDI R16, 0xF0
+	OUT LCD_PORT, R16
+	SBI PORTB, RS	;Chon che do ghi DATA
+	CBI PORTB, RW	;Chon che do GHI
+	SBI PORTB, EN	;Cho phep
+	NOP
+	CBI PORTB, EN
+	RCALL DELAY_2MS
+	
+	MOV R16, R17
+	SWAP R16
+	ANDI R16, 0xF0
+	OUT LCD_PORT, R16
+	SBI PORTB, RS
+	CBI PORTB, RW
+	SBI PORTB, EN
+	NOP
+	CBI PORTB, EN
+	RCALL DELAY_2MS
+	RET
+
+
+
+
+//-----------##@-CauHinh_I2C-@##-----------------------
+//I2C_INIT:
+I2C_INIT:
+	LDI R16,8				;fSCL = 100kHz
+	STS TWBR,R16	
+	LDI R16,(1<<TWPS0)		;He so chia 4
+	STS TWSR,R16
+	LDI R16,(1<<TWEN)
+	STS TWCR,R16		;Enable TWI
+	RET
+
+//Chuong trinh con gui tin hieu START
+//I2C_START
+I2C_START:
+	LDI R16,(1<<TWEN)|(1<<TWSTA)|(1<<TWINT)
+	STS TWCR,R16
+I2C_WAIT1:
+	LDS R16,TWCR		;Doc bit TWINT
+	SBRS R16,TWINT		;Cho TWINT=1 thi truyen xong
+	RJMP I2C_WAIT1
+	RET 
+
+//Chuong trinh con gui tin hieu STOP
+I2C_STOP:
+	LDI R16,(1<<TWEN)|(1<<TWSTO)|(1<<TWINT)
+	STS TWCR,R16
+	RET
+
+//Chuong trinh con gui du lieu Master
+//Du lieu tu R22 gui di
+I2C_WRITE:
+	STS TWDR,R22
+	LDI R16,(1<<TWEN)|(1<<TWINT)|(1<<TWEA)
+	STS TWCR,R16
+I2C_WAIT2:
+	LDS R16,TWCR		;Doc bit TWINT
+	SBRS R16,TWINT		;Cho TWINT=1 thi truyen xong
+	RJMP I2C_WAIT2
+	RET 
+
+//Chuong trinh con doc du lieu Master
+//Du lieu doc duoc luu vao R22
+I2C_READ:
+	LDI R16,(1<<TWEN)|(1<<TWINT)|(1<<TWEA)
+	STS TWCR,R16
+I2C_WAIT3:
+	LDS R16,TWCR		;Doc bit TWINT
+	SBRS R16,TWINT		;Cho TWINT=1 thi truyen xong
+	RJMP I2C_WAIT3
+	LDS R22,TWDR
+	RET
+
+//Chuong trinh con MASTER tra tin hieu NACK
+I2C_NACK:
+	LDI R16,(1<<TWEN)|(1<<TWINT)
+	STS TWCR,R16
+I2C_WAIT4:
+	LDS R16,TWCR		;Doc bit TWINT
+	SBRS R16,TWINT		;Cho TWINT=1 thi truyen xong
+	RJMP I2C_WAIT4
+	RET
+
+
+//-----------------------------##DELAYS#-------------------------------
+//Delay2ms_Timer
+//Mode CTC => WGM = 010
+//Prescale 128 => CS = 101
+DELAY_2MS:
+	PUSH R16
+	LDI R16,249
+	STS OCR2A,R16
+
+	LDI R16,(1<<WGM21)
+	STS TCCR2A,R16
+	LDI R16,(1<<CS22)|(1<<CS20)
+	STS TCCR2B,R16
+
+	WAIT_T2:
+	IN R16,TIFR2
+	SBRS R16,OCF2A
+	RJMP WAIT_T2
+	OUT TIFR2,R16
+	LDI R16,0x00
+	STS TCCR2B,R16
+	POP R16
+	RET
+	
+//Delay 1s Timer1
+//Mode CTC
+//Prescale = 256
+DELAY_1S_CTC_INIT:
+	PUSH R16
+	LDI R16,HIGH(62499)
+	STS OCR1AH,R16
+	LDI R16,LOW(62499)
+	STS OCR1AL,R16
+
+	LDI R16,0x00
+	STS TCCR1A,R16
+	LDI R16,0x0C
+	STS TCCR1B,R16
+	POP R16
+	RET
+
+//-----------------------------CHUONG_CON_NGAT---------------------------------------------
+TIMER1_COMPA_ISR:
+	CPI R23,0x01
+	IN R16,SREG
+	SBRC R16,0
+	RJMP CLOCK
+
+PODOMORO:
+	RCALL PRINT_LINE3
+	LDI R17,0xC0
+	RCALL WRITECOM
+
+LOOP_T:
+	RCALL PRINT_LINE3
+	LDI R17,0xC0
+	RCALL WRITECOM
+	INC R24
+	CPI R24,60
+	BRSH CHANGE
+
+	MOV R18,R25					;Hien So Phut
+	RCALL BIN_TO_BCD
+	MOV R22,R19
+	RCALL BCD_TO_ASCII
+	MOV R17,R19
+	RCALL WRITECHAR
+	MOV R17,R18
+	RCALL WRITECHAR
+
+	LDI R17,':'
+	RCALL WRITECHAR
+
+	MOV R18,R24					;Hien So Giay
+	RCALL BIN_TO_BCD
+	MOV R22,R19
+	RCALL BCD_TO_ASCII
+	MOV R17,R19
+	RCALL WRITECHAR
+	MOV R17,R18
+	RCALL WRITECHAR
+
+	RJMP EXIT1
+
+
+CHANGE:
+	CLR R24
+	INC R25
+	CPI R25,50
+	BREQ STOP_T
+
+	MOV R18,R25					;Hien So Phut
+	RCALL BIN_TO_BCD
+	MOV R22,R19
+	RCALL BCD_TO_ASCII
+	MOV R17,R19
+	RCALL WRITECHAR
+	MOV R17,R18
+	RCALL WRITECHAR
+
+	LDI R17,':'
+	RCALL WRITECHAR
+
+	MOV R18,R24					;Hien So Giay
+	RCALL BIN_TO_BCD
+	MOV R22,R19
+	RCALL BCD_TO_ASCII
+	MOV R17,R19
+	RCALL WRITECHAR
+	MOV R17,R18
+	RCALL WRITECHAR
+
+	RJMP EXIT1
+
+STOP_T:
+	MOV R18,R25					;Hien So Phut
+	RCALL BIN_TO_BCD
+	MOV R22,R19
+	RCALL BCD_TO_ASCII
+	MOV R17,R19
+	RCALL WRITECHAR
+	MOV R17,R18
+	RCALL WRITECHAR
+
+	LDI R17,':'
+	RCALL WRITECHAR
+
+	MOV R18,R24					;Hien So Giay
+	RCALL BIN_TO_BCD
+	MOV R22,R19
+	RCALL BCD_TO_ASCII
+	MOV R17,R19
+	RCALL WRITECHAR
+	MOV R17,R18
+	RCALL WRITECHAR
+
+	SBI PORTC,3
+	LDI R16,0x00
+	STS TCCR1B,R16
+	RJMP EXIT1
+	
+CLOCK:
+	RCALL PRINT_LINE1
+	RCALL PRINT_LINE2
+	IN R21,PORTC
+	LDI R20,0x04
+	EOR R21,R20
+	OUT PORTC,R21
+EXIT1:
+	RETI
+
+//Ngat PINCT8 !!
+PCINT1_ISR:
+	PUSH R16
+	PUSH R17
+	IN R17,SREG
+	PUSH R17
+
+		LDI R24,50
+		LDI R25,49
+		//CLR R24
+		//CLR R25
+		CBI PORTC,3
+		RCALL DELAY_1S_CTC_INIT
+
+		RCALL CLEAR_DISPLAY
+		IN R17,PORTC
+		LDI R16,0x02
+		EOR R17,R16
+		OUT PORTC,R17
+		
+		LDI R16,0x01
+		EOR R23,R16
+		
+		POP R17
+		OUT SREG,R17
+		POP R17
+		POP R16
+	RETI
+
+
+//-----------------------------------------------------------
+//Set gio phut giay
+SET_TIME:
+	RCALL I2C_START
+	LDI R22,0xD0		;Chon Slave (0x68 + bit WRITE) 
+	RCALL I2C_WRITE
+	LDI R22,0x00
+	RCALL I2C_WRITE
+
+	LDI R22,SECOND		;Write Seconds	(BCD)
+	RCALL I2C_WRITE
+
+	LDI R22,MINUTES		;Write Minutes	(BCD)
+	RCALL I2C_WRITE
+
+	LDI R22,HOURS		;Write Hours (BCD)
+	RCALL I2C_WRITE
+	RCALL I2C_STOP
+	RCALL DELAY_2MS
+	RET
+
+//Set ngay thang nam
+SET_DATE:
+	RCALL I2C_START
+	LDI R22,0xD0		;Chon Slave (0x68 + bit WRITE)
+	RCALL I2C_WRITE
+	LDI R22,0x04		;Pointer toi 0x04
+	RCALL I2C_WRITE
+
+	LDI R22,DATE		;Write DATE	(BCD)
+	RCALL I2C_WRITE
+
+	LDI R22,MONTH		;Write MONTH (BCD)
+	RCALL I2C_WRITE
+
+	LDI R22,YEAR	;Write YEAR (BCD)
+	RCALL I2C_WRITE
+	RCALL I2C_STOP
+	RCALL DELAY_2MS
+	RET
+
+//-------Chuyen doi BCD 2 chu so thanh 2 so ASCII--------------------
+//Lay du lieu tu R22
+//Byte Cao: R19
+//Byte Thap: R18
+BCD_TO_ASCII:
+	PUSH R16
+	PUSH R17
+	LDI R16,0x30
+	MOV R17,R22
+	ANDI R17,0x0F
+	MOV R18,R17
+	MOV R17,R22
+	SWAP R17
+	ANDI R17,0x0F
+	MOV R19,R17
+
+	ADD R19,R16
+	ADD R18,R16
+	POP R17
+	POP R16
+	RET
+
+//Doan code chuyen binary sang BCD2 digit
+//Input R18
+//Output: R19
+BIN_TO_BCD:
+	;Khoi tao hang chuc ve 0
+	CLR R19
+
+	Compare_Loop:
+		CPI R18,10
+		BRLO End_Compare	;Check xem R18 < 10 ?
+
+		SUBI R18,10			;Neu chua thi -10
+		INC R19
+		RJMP Compare_Loop
+
+	End_Compare:
+		SWAP R19
+		ANDI R19,0xF0
+		ADD R19,R18
+		RET
+
+//----------------------------------------
+PRINT_LINE3:
+	LDI		R17, 0x80
+	RCALL	WRITECOM
+	LDI     ZH, HIGH(LINE3<<1) 
+	LDI     ZL, LOW (LINE3<<1)
+PRINT_LINE3_LOOP:
+	LPM		R17, Z+
+	CPI		R17, 0
+	BREQ	EXIT_PRINT_LINE3	
+	RCALL	WRITECHAR
+	RJMP PRINT_LINE3_LOOP
+EXIT_PRINT_LINE3:
+	RET
+
+//----------------------------------------
+CLEAR_DISPLAY:
+	LDI		R17, 0x01
+	RCALL	WRITECOM
+	RET
+
+.ORG 0X200
+LINE1:.DB "TIME|",0		;DIEN CHUOI CAN HIEN O DONG 1 "......."
+LINE2:.DB "DATE|",0			;DIEN CHUOI CAN HIEN O DONG 2 "......."
+LINE3: .DB "HELLO CHAN !!",0
